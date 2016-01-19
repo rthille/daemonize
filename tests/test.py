@@ -3,11 +3,16 @@ import os
 import pwd
 import grp
 import subprocess
+import fcntl
 import errno
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 
 from tempfile import mkstemp
 from time import sleep
 from os.path import split
+from daemonize import Daemonize
 
 NOBODY_UID = pwd.getpwnam("nobody").pw_uid
 if os.path.exists("/etc/debian_version"):
@@ -20,7 +25,11 @@ class DaemonTestCase(unittest.TestCase):
     def tearDown(self):
         try:
             with open(self.pidfile) as f:
-                pid = int(f.read())
+                read_pid = f.read()
+            if not read_pid:
+                sleep(.1)
+                return
+            pid = int(read_pid)
             os.kill(pid, 15)
         except IOError as err:
             if err.errno == errno.ENOENT:
@@ -38,7 +47,7 @@ class DaemonizeTest(DaemonTestCase):
         sleep(.1)
 
     def test_is_working(self):
-        sleep(10)
+        sleep(1)
         proc = subprocess.Popen("ps ax | awk '{print $1}' | grep `cat %s`" % self.pidfile,
                                 shell=True, stdout=subprocess.PIPE)
         ps_pid = proc.communicate()[0].decode()
@@ -46,21 +55,21 @@ class DaemonizeTest(DaemonTestCase):
             pid = pidfile.read()
         self.assertEqual("%s\n" % pid, ps_pid)
 
-    def test_pidfile_presense(self):
-        sleep(10)
+    def test_pidfile_presence(self):
+        sleep(1)
         self.assertTrue(os.path.isfile(self.pidfile))
 
 
 class LockingTest(DaemonTestCase):
     def setUp(self):
         self.pidfile = mkstemp()[1]
-        print("First daemonize process started")
+        print("\n    First daemonize process started")
         os.system("python tests/daemon_sigterm.py %s" % self.pidfile)
         sleep(.1)
 
     def test_locking(self):
-        sleep(10)
-        print("Attempting to start second daemonize process [Expect ERROR log]")
+        sleep(1)
+        print("    Attempting to start second daemonize process [Expect ERROR log]")
         proc = subprocess.call(["python", "tests/daemon_sigterm.py", self.pidfile])
         self.assertEqual(proc, 1)
 
@@ -124,7 +133,7 @@ class PrivilegedActionTest(DaemonTestCase):
         self.correct_log = """Privileged action.
 Starting daemon.
 Action.
-Stopping daemon.
+Daemon exiting.
 """
         self.pidfile = mkstemp()[1]
         self.logfile = mkstemp()[1]
@@ -132,7 +141,7 @@ Stopping daemon.
         sleep(.1)
 
     def test_privileged_action(self):
-        sleep(5)
+        sleep(1)
         with open(self.logfile, "r") as contents:
             self.assertEqual(contents.read(), self.correct_log)
 
@@ -146,9 +155,85 @@ class ChdirTest(DaemonTestCase):
         os.system("python tests/daemon_chdir.py %s %s %s" % (self.pidfile, base, file))
         sleep(1)
 
-    def test_keep_fds(self):
+    def test_chdir(self):
         log = open(self.target, "r").read()
         self.assertEqual(log, "test")
+
+def sleep_forever():
+    while True:
+        logging.error('sleep_forever')
+        sleep(1)
+
+
+class NoExitTests(DaemonTestCase):
+
+    def test_raise_no_write(self):
+        self.pidfile = '/doesnotexist/pidfile'
+
+        daemon = Daemonize(app='NoExitTest_RaiseNoWrite', pid=self.pidfile,
+                           action=sleep_forever, raise_prior_to_fork=True)
+        print("\n    Attempting to daemonize with inaccessable pidfile [Expect ERROR log]")
+        with self.assertRaises(IOError):
+            daemon.start()
+
+    def test_raise_no_lock(self):
+        self.pidfd, self.pidfile = mkstemp()
+
+        try:
+            fcntl.flock(self.pidfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except:
+            logging.exception('Failed initial lock on pidfile: %s', self.pidfile)
+            raise
+
+        daemon = Daemonize(app='NoExitTest_RaiseNoLock', pid=self.pidfile,
+                           action=sleep_forever, raise_prior_to_fork=True)
+        print("\n    Attempting to daemonize with locked pidfile [Expect ERROR log]")
+        with self.assertRaises(IOError):
+            daemon.start()
+
+    def test_parent_return(self):
+        self.pidfile = mkstemp()[1]
+        self.logfile = mkstemp()[1]
+
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        fh = logging.FileHandler(self.logfile, "w")
+        fh.setLevel(logging.DEBUG)
+        logger.addHandler(fh)
+        keep_fds = [fh.stream.fileno()]
+
+        daemon = Daemonize(app='NoExitTest_ParentReturn', pid=self.pidfile,
+                           keep_fds=keep_fds,
+                           action=sleep_forever, return_in_parent=True)
+        child_pid = daemon.start()
+        sleep(1.0)
+        try:
+            with open(self.pidfile) as f:
+                read_pid = f.read()
+            pid = int(read_pid)
+        except:
+            logging.exception('child failed to write proper pidfile: %s', self.pidfile)
+            raise
+        # Make sure the pid we got back from start matches the pidfile
+        self.assertEqual(child_pid, pid)
+        # Kill -9 to avoid unittest framework getting control in child
+        try:
+            os.kill(pid, 9)
+        except OSError as err:
+            if err.errno == errno.ESRCH:
+                self.fail('Child process was not running.')
+            else:
+                self.fail('Unexpected OSError errno: %d', err.errno)
+        # And do cleanup of pidfile ourselves
+        try:
+            os.remove(self.pidfile)
+        except OSError as err:
+            if err.errno == errno.ENOENT:
+                pass
+            else:
+                raise
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

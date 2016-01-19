@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 
+import logging
 from sys import argv
 
 from daemonize import Daemonize
+
+logging.basicConfig(level=logging.DEBUG)
 
 pid = argv[1]
 working_dir = argv[2]

@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 
-from logging import basicConfig
+import logging
 from sys import argv
 from time import sleep
 
 from daemonize import Daemonize
 
-basicConfig()
+logging.basicConfig(level=logging.DEBUG)
 
 pid = argv[1]
 

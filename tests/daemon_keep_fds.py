@@ -5,6 +5,8 @@ from sys import argv
 
 from daemonize import Daemonize
 
+logging.basicConfig(level=logging.DEBUG)
+
 pid = argv[1]
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

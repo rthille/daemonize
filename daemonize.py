@@ -1,5 +1,6 @@
 # #!/usr/bin/python
 
+import errno
 import fcntl
 import os
 import pwd
@@ -12,7 +13,7 @@ import atexit
 from logging import handlers
 
 
-__version__ = "2.4.3"
+__version__ = "2.4.5"
 
 
 class Daemonize(object):
@@ -41,7 +42,8 @@ class Daemonize(object):
     def __init__(self, app, pid, action,
                  keep_fds=None, auto_close_fds=True, privileged_action=None,
                  user=None, group=None, verbose=False, logger=None,
-                 foreground=False, chdir="/"):
+                 foreground=False, chdir="/", raise_prior_to_fork=False,
+                 return_in_parent=False):
         self.app = app
         self.pid = pid
         self.action = action
@@ -54,21 +56,28 @@ class Daemonize(object):
         self.auto_close_fds = auto_close_fds
         self.foreground = foreground
         self.chdir = chdir
+        self.raise_prior_to_fork = raise_prior_to_fork
+        self.return_in_parent = return_in_parent
 
     def sigterm(self, signum, frame):
         """
         These actions will be done after SIGTERM.
         """
         self.logger.warn("Caught signal %s. Stopping daemon." % signum)
-        os.remove(self.pid)
         sys.exit(0)
 
     def exit(self):
         """
         Cleanup pid file at exit.
         """
-        self.logger.warn("Stopping daemon.")
-        os.remove(self.pid)
+        self.logger.info("Daemon exiting.")
+        try:
+            os.remove(self.pid)
+        except OSError as err:
+            if err.errno == errno.ENOENT:
+                pass
+            else:
+                raise
         sys.exit(0)
 
     def start(self):
@@ -88,16 +97,20 @@ class Daemonize(object):
             lockfile = open(self.pid, "w")
         except IOError:
             logger.error("Unable to write pid to the pidfile.")
+            if self.raise_prior_to_fork:
+                raise
             sys.exit(1)
         try:
             # Try to get an exclusive lock on the file. This will fail if another process has the file
             # locked.
             fcntl.flock(lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except IOError:
-            logger.error("Unable to lock on the pidfile.")
+            logger.error("Unable to obtain lock on the pidfile.")
             # We need to overwrite the pidfile if we got here.
             with open(self.pid, "w") as pidfile:
                 pidfile.write(old_pid)
+            if self.raise_prior_to_fork:
+                raise
             sys.exit(1)
 
         # skip fork if foreground is specified
@@ -106,9 +119,15 @@ class Daemonize(object):
             process_id = os.fork()
             if process_id < 0:
                 # Fork error. Exit badly.
+                # Not sure this will ever be reached, I think os.fork() raises on errors
+                # rather than returning a negative pid
+                if self.raise_prior_to_fork:
+                    raise
                 sys.exit(1)
             elif process_id != 0:
-                # This is the parent process. Exit.
+                # This is the parent process. Exit, or return the child pid if so desired
+                if self.return_in_parent:
+                    return process_id
                 sys.exit(0)
             # This is the child process. Continue.
 
@@ -119,6 +138,7 @@ class Daemonize(object):
             process_id = os.setsid()
             if process_id == -1:
                 # Uh oh, there was a problem.
+                logger.error("os.setsid call failed.")
                 sys.exit(1)
 
             # Add lockfile to self.keep_fds.
@@ -238,6 +258,6 @@ class Daemonize(object):
         signal.signal(signal.SIGTERM, self.sigterm)
         atexit.register(self.exit)
 
-        self.logger.warn("Starting daemon.")
+        self.logger.info("Starting daemon.")
 
         self.action(*privileged_action_result)
