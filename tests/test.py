@@ -3,6 +3,7 @@ import os
 import pwd
 import grp
 import subprocess
+import errno
 
 from tempfile import mkstemp
 from time import sleep
@@ -15,14 +16,25 @@ else:
     NOBODY_GID = grp.getgrnam("nobody").gr_gid
 
 
-class DaemonizeTest(unittest.TestCase):
+class DaemonTestCase(unittest.TestCase):
+    def tearDown(self):
+        try:
+            with open(self.pidfile) as f:
+                pid = int(f.read())
+            os.kill(pid, 15)
+        except IOError as err:
+            if err.errno == errno.ENOENT:
+                pass
+        except OSError as err:
+            if err.errno == errno.ESRCH:
+                pass
+        sleep(.1)
+
+
+class DaemonizeTest(DaemonTestCase):
     def setUp(self):
         self.pidfile = mkstemp()[1]
         os.system("python tests/daemon_sigterm.py %s" % self.pidfile)
-        sleep(.1)
-
-    def tearDown(self):
-        os.system("kill `cat %s`" % self.pidfile)
         sleep(.1)
 
     def test_is_working(self):
@@ -39,25 +51,21 @@ class DaemonizeTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(self.pidfile))
 
 
-class LockingTest(unittest.TestCase):
+class LockingTest(DaemonTestCase):
     def setUp(self):
         self.pidfile = mkstemp()[1]
         print("First daemonize process started")
         os.system("python tests/daemon_sigterm.py %s" % self.pidfile)
         sleep(.1)
 
-    def tearDown(self):
-        os.system("kill `cat %s`" % self.pidfile)
-        sleep(.1)
-
     def test_locking(self):
         sleep(10)
-        print("Attempting to start second daemonize process")
+        print("Attempting to start second daemonize process [Expect ERROR log]")
         proc = subprocess.call(["python", "tests/daemon_sigterm.py", self.pidfile])
         self.assertEqual(proc, 1)
 
 
-class KeepFDsTest(unittest.TestCase):
+class KeepFDsTest(DaemonTestCase):
     def setUp(self):
         self.pidfile = mkstemp()[1]
         self.logfile = mkstemp()[1]
@@ -65,7 +73,7 @@ class KeepFDsTest(unittest.TestCase):
         sleep(1)
 
     def tearDown(self):
-        os.system("kill `cat %s`" % self.pidfile)
+        super(KeepFDsTest, self).tearDown()
         os.remove(self.logfile)
         sleep(.1)
 
@@ -74,7 +82,7 @@ class KeepFDsTest(unittest.TestCase):
         self.assertEqual(log, "Test\n")
 
 
-class UidGidTest(unittest.TestCase):
+class UidGidTest(DaemonTestCase):
     def setUp(self):
         self.expected = " ".join(map(str, [NOBODY_UID] * 2 + [NOBODY_GID] * 2))
         self.pidfile = mkstemp()[1]
@@ -111,7 +119,7 @@ class UidGidTest(unittest.TestCase):
             self.assertEqual(f.read(), self.expected)
 
 
-class PrivilegedActionTest(unittest.TestCase):
+class PrivilegedActionTest(DaemonTestCase):
     def setUp(self):
         self.correct_log = """Privileged action.
 Starting daemon.
@@ -123,17 +131,13 @@ Stopping daemon.
         os.system("python tests/daemon_privileged_action.py %s %s" % (self.pidfile, self.logfile))
         sleep(.1)
 
-    def tearDown(self):
-        os.system("kill `cat %s`" % self.pidfile)
-        sleep(.1)
-
     def test_privileged_action(self):
         sleep(5)
         with open(self.logfile, "r") as contents:
             self.assertEqual(contents.read(), self.correct_log)
 
 
-class ChdirTest(unittest.TestCase):
+class ChdirTest(DaemonTestCase):
     def setUp(self):
         self.pidfile = mkstemp()[1]
         self.target = mkstemp()[1]
@@ -142,13 +146,9 @@ class ChdirTest(unittest.TestCase):
         os.system("python tests/daemon_chdir.py %s %s %s" % (self.pidfile, base, file))
         sleep(1)
 
-    def tearDown(self):
-        os.system("kill `cat %s`" % self.pidfile)
-        sleep(.1)
-
     def test_keep_fds(self):
         log = open(self.target, "r").read()
         self.assertEqual(log, "test")
 
 if __name__ == '__main__':
-    unittest.main()
+    unittest.main(verbosity=2)
