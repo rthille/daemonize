@@ -12,7 +12,7 @@ import atexit
 from logging import handlers
 
 
-__version__ = "2.4.2"
+__version__ = "2.4.3"
 
 
 class Daemonize(object):
@@ -77,6 +77,9 @@ class Daemonize(object):
         """
         # If pidfile already exists, we should read pid from there; to overwrite it, if locking
         # will fail, because locking attempt somehow purges the file contents.
+        logger = self.logger
+        if logger is None:
+            logger = logging.getLogger(self.app)
         if os.path.isfile(self.pid):
             with open(self.pid, "r") as old_pidfile:
                 old_pid = old_pidfile.read()
@@ -84,14 +87,14 @@ class Daemonize(object):
         try:
             lockfile = open(self.pid, "w")
         except IOError:
-            print("Unable to create the pidfile.")
+            logger.error("Unable to write pid to the pidfile.")
             sys.exit(1)
         try:
             # Try to get an exclusive lock on the file. This will fail if another process has the file
             # locked.
             fcntl.flock(lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except IOError:
-            print("Unable to lock on the pidfile.")
+            logger.error("Unable to lock on the pidfile.")
             # We need to overwrite the pidfile if we got here.
             with open(self.pid, "w") as pidfile:
                 pidfile.write(old_pid)
@@ -229,7 +232,6 @@ class Daemonize(object):
             lockfile.flush()
         except IOError:
             self.logger.error("Unable to write pid to the pidfile.")
-            print("Unable to write pid to the pidfile.")
             sys.exit(1)
 
         # Set custom action on SIGTERM.
