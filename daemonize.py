@@ -254,9 +254,10 @@ class Daemonize(object):
             self.logger.error("Unable to write pid to the pidfile.")
             sys.exit(1)
 
+        # Ensure we clean up our pidfile
+        atexit.register(self.exit)
         # Set custom action on SIGTERM.
         signal.signal(signal.SIGTERM, self.sigterm)
-        atexit.register(self.exit)
 
         self.logger.info("Starting daemon.")
 
